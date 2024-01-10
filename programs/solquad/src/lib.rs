@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, SetAuthority, TokenAccount, Transfer, Token};
 
 declare_id!("5sFUqUTjAMJARrEafMX8f4J1LagdUQ9Y8TR8HwGNHkU8");
 
@@ -37,16 +36,10 @@ pub mod solquad {
         Ok(())
     }
 
-    pub fn add_project_to_pool(ctx: Context<AddProjectToPool>, name: String) -> Result<()> {
+    pub fn add_project_to_pool(ctx: Context<AddProjectToPool>) -> Result<()> {
         let escrow_account = &mut ctx.accounts.escrow_account;
         let pool_account = &mut ctx.accounts.pool_account;
-        let project_account = &mut ctx.accounts.project_account;
-
-        project_account.project_owner = ctx.accounts.project_owner.key();
-        project_account.project_name = name;
-        project_account.votes_count = 0;
-        project_account.voter_amount = 0;
-        project_account.distributed_amt = 0;
+        let project_account = &ctx.accounts.project_account;
 
         pool_account.projects.push(
             project_account.project_owner
@@ -60,12 +53,12 @@ pub mod solquad {
         Ok(())
     }
 
-    pub fn vote_for_project(ctx: Context<VoteForProject>, key: Pubkey, amount: u64) -> Result<()> {
+    pub fn vote_for_project(ctx: Context<VoteForProject>, amount: u64) -> Result<()> {
         let pool_account = &mut ctx.accounts.pool_account;
         let project_account = &mut ctx.accounts.project_account;
 
         for i in 0..pool_account.projects.len() {
-            if pool_account.projects[i] == key {
+            if pool_account.projects[i] == project_account.project_owner {
                 project_account.votes_count += 1;
                 project_account.voter_amount += amount;
             }
@@ -141,12 +134,13 @@ pub struct InitializeProject<'info> {
         init,
         payer = project_owner,
         space = 32 + 32 + 8 + 8 + 8 + 8,
-        seeds = [b"project".as_ref(), project_owner.key().as_ref()],
+        seeds = [b"project".as_ref(), pool_account.key().as_ref(), project_owner.key().as_ref()],
         bump,
     )]
     pub project_account: Account<'info, Project>,
     #[account(mut)]
     pub project_owner: Signer<'info>,
+    pub pool_account: Account<'info, Pool>,
     pub system_program: Program<'info, System>,
 }
 
@@ -156,9 +150,7 @@ pub struct AddProjectToPool<'info> {
     pub escrow_account: Account<'info, Escrow>,
     #[account(mut)]
     pub pool_account: Account<'info, Pool>,
-    #[account(mut)]
     pub project_account: Account<'info, Project>,
-    #[account(mut)]
     pub project_owner: Signer<'info>,
 }
 
@@ -175,11 +167,8 @@ pub struct VoteForProject<'info> {
 #[derive(Accounts)]
 pub struct DistributeEscrowAmount<'info> {
     #[account(mut)]
-    pub escrow_owner: Signer<'info>,
-    #[account(
-        mut,
-        constraint = escrow_account.escrow_creator == escrow_owner.key(), 
-    )]
+    pub escrow_creator: Signer<'info>,
+    #[account(mut, has_one = escrow_creator)]
     pub escrow_account: Account<'info, Escrow>,
     #[account(mut)]
     pub pool_account: Account<'info, Pool>,

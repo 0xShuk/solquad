@@ -1,35 +1,23 @@
-import { join } from "path";
-import { readFileSync } from "fs";
-import { 
-  TOKEN_PROGRAM_ID, 
-  LAMPORTS_PER_SOL, 
-  createMint, 
-  createAccount, 
-  MINT_SIZE, 
-  mintTo, 
-  getMint, 
-  createAssociatedTokenAccount, 
-  mintToChecked 
-} from "@solana/spl-token";
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { Solquad } from "../target/types/solquad";
+import idl from "../target/idl/solquad.json";
+import {Solquad} from "../target/idl/solquad";
+
 import { utf8 } from "@coral-xyz/anchor/dist/cjs/utils/bytes";
 import {BN} from "bn.js";
 
 describe("solquad", async () => {
-  // Configure the client to use the local cluster.
-  const provider = anchor.AnchorProvider.env();
-  anchor.setProvider(provider);
+  const connection = new anchor.web3.Connection(anchor.web3.clusterApiUrl("devnet"), 'confirmed');
+  const programId = new anchor.web3.PublicKey("3fowu869PY6frqrYPdhtCzsm7j1jgjpr47HyuyMP9xUH");
 
-  const program = anchor.workspace.Solquad as Program<Solquad>;
+  const admin = anchor.web3.Keypair.generate();
+  const admin2 = anchor.web3.Keypair.generate();
+  const wallet = new anchor.Wallet(admin);
 
-  const WALLET_PATH = join(process.env["HOME"]!, ".config/solana/id.json");
-  const admin = anchor.web3.Keypair.fromSecretKey(
-    Buffer.from(JSON.parse(readFileSync(WALLET_PATH, { encoding: "utf-8" })))
-  );
-
-  const AIRDROP_AMOUNT = 5 * LAMPORTS_PER_SOL; // 5 SOL 
+  const provider = new anchor.AnchorProvider(connection, wallet, {});
+  const provider2 = new anchor.AnchorProvider(connection, new anchor.Wallet(admin2), {});
+  const program = new Program<Solquad>(idl as Solquad, programId, provider)
+  const program2 = new Program<Solquad>(idl as Solquad, programId, provider2)
 
   const escrowOwner = anchor.web3.Keypair.generate();
   const projectOwner1 = anchor.web3.Keypair.generate();
@@ -42,8 +30,6 @@ describe("solquad", async () => {
   const voter5 = anchor.web3.Keypair.generate();
   const voter6 = anchor.web3.Keypair.generate();
 
-  airdrop(projectOwner1, provider);
-
   const [escrowPDA] = await anchor.web3.PublicKey.findProgramAddressSync([
     utf8.encode("escrow"),
     admin.publicKey.toBuffer(),
@@ -51,88 +37,127 @@ describe("solquad", async () => {
     program.programId
   );
 
-  const [poolPDA] = await anchor.web3.PublicKey.findProgramAddressSync([
+  const [poolPDA] = anchor.web3.PublicKey.findProgramAddressSync([
     utf8.encode("pool"),
     admin.publicKey.toBuffer(),
   ],
     program.programId
   );
 
-  const [projectPDA1] = await anchor.web3.PublicKey.findProgramAddressSync([
+  const [projectPDA1] = anchor.web3.PublicKey.findProgramAddressSync([
     utf8.encode("project"),
+    poolPDA.toBytes(),
     admin.publicKey.toBuffer(),
   ],
     program.programId
   );
 
-  it("Is initialized!", async () => {
-    console.log("ESCROW PDA", escrowPDA);
-    // Add your test here.
-    const escrowTx = await program.methods.initializeEscrow(new BN(10000)).accounts({
+  const [differentEscrowPDA] = anchor.web3.PublicKey.findProgramAddressSync([
+    utf8.encode("escrow"),
+    admin2.publicKey.toBuffer(),
+  ],
+    program.programId
+  );
+
+  const [differentPoolPDA] = anchor.web3.PublicKey.findProgramAddressSync([
+    utf8.encode("pool"),
+    admin2.publicKey.toBuffer()
+  ],
+    program.programId
+  );
+
+  airdrop(admin, provider);
+  airdrop(admin2, provider);
+
+  // Test 1
+  it("initializes escrow and pool", async () => {
+    const poolIx = await program.methods.initializePool().accounts({
+      poolAccount: poolPDA,
+    }).instruction();
+
+    const escrowAndPoolTx = await program.methods.initializeEscrow(new BN(10000)).accounts({
       escrowAccount: escrowPDA,
-      escrowSigner: admin.publicKey,
-      systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([admin]).rpc();
-    console.log("Your transaction signature", escrowTx);
+    })
+    .postInstructions([poolIx])
+    .rpc()
+      
+    console.log("Escrow and Pool are successfully created!", escrowAndPoolTx);
 
-    console.log("POOL PDA", poolPDA);
-    const poolTx = await program.methods.initializePool().accounts({
-      poolAccount: poolPDA,
-      poolSigner: admin.publicKey,
-      systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([admin]).rpc();
-
-    const project1Tx = await program.methods.initializeProject("").accounts({
-      projectAccount: projectPDA1,
-      projectOwner: admin.publicKey,
-      systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([admin]).rpc();
-
-    const tx1 = await program.methods.addProjectToPool("project1").accounts({
-      escrowAccount: escrowPDA,
-      poolAccount: poolPDA,
-      projectAccount: projectPDA1,
-      projectOwner: admin.publicKey,
-    }).signers([admin]).rpc();
-
-    const data = await program.account.pool.fetch(
-      poolPDA
-    )
-    console.log("data projects", data.totalProjects)
-    console.assert(data.totalProjects == 1);
-
-    const voteTx = await program.methods.voteForProject(admin.publicKey, new BN(10)).accounts({
-      poolAccount: poolPDA,
-      projectAccount: projectPDA1,
-      voterSig: admin.publicKey
-    }).signers([]).rpc();
-
-    const project = await program.account.project.fetch(
-      projectPDA1
-    )
-    console.log("amount", project.voterAmount.toString());
-
-    const distribTx = await program.methods.distributeEscrowAmount().accounts({
-      escrowAccount: escrowPDA,
-      poolAccount: poolPDA,
-      projectAccount: projectPDA1,
-      escrowOwner: admin.publicKey,
-    }).signers([admin]).rpc();
-
-    const ant = await program.account.project.fetch(
-      projectPDA1
-    )
-    console.log("amount", ant.distributedAmt.toString());
   });
 
-  it("Seems like I have less votes but I can maximize my rewards", async () => {
+  // Test 2
+  it("creates project and add it to the pool twice", async() => {
+    const addProjectIx = await program.methods.addProjectToPool().accounts({
+      escrowAccount: escrowPDA,
+      poolAccount: poolPDA,
+      projectAccount: projectPDA1,
+    })
+    .instruction();
 
+    const addProjectTx = await program.methods.initializeProject("My Project").accounts({
+      projectAccount: projectPDA1,
+      poolAccount: poolPDA
+    })
+    .postInstructions([addProjectIx, addProjectIx])
+    .rpc();
+
+    console.log("Project successfully created and added to the pool twice", addProjectTx);
+
+    const data = await program.account.pool.fetch(poolPDA)
+    console.log("data projects", data.projects);
   })
+
+  // Test 3
+  it("tries to add the project in the different pool", async() => {
+    const poolIx = await program2.methods.initializePool().accounts({
+      poolAccount: differentPoolPDA,
+    }).instruction();
+
+    const escrowIx = await program2.methods.initializeEscrow(new BN(10000)).accounts({
+      escrowAccount: differentEscrowPDA,
+    })
+    .instruction()
+
+    const addProjectTx = await program2.methods.addProjectToPool().accounts({
+      projectAccount: projectPDA1,
+      poolAccount: differentPoolPDA,
+      escrowAccount: differentEscrowPDA
+    })
+    .preInstructions([escrowIx, poolIx])
+    .rpc();
+
+    console.log("Different pool is created and the project is inserted into it", addProjectTx);
+
+    const data = await program.account.pool.fetch(differentPoolPDA)
+    console.log("data projects", data.projects);
+  });
+
+  // Test 4
+  it("votes for the project and distributes the rewards", async() => {
+    const distribIx = await program.methods.distributeEscrowAmount().accounts({
+      escrowAccount: escrowPDA,
+      poolAccount: poolPDA,
+      projectAccount: projectPDA1,
+    })
+    .instruction();
+
+    const voteTx = await program.methods.voteForProject(new BN(10)).accounts({
+      poolAccount: poolPDA,
+      projectAccount: projectPDA1,
+    })
+    .postInstructions([distribIx])
+    .rpc();
+    
+    console.log("Successfully voted on the project and distributed weighted rewards", voteTx);
+
+    const ant = await program.account.project.fetch(projectPDA1)
+    console.log("amount", ant.distributedAmt.toString());
+  });
 });
 
 
 async function airdrop(user, provider) {
-  const AIRDROP_AMOUNT = 5 * LAMPORTS_PER_SOL; // 5 SOL
+  const AIRDROP_AMOUNT = anchor.web3.LAMPORTS_PER_SOL; // 5 SOL
 
   // airdrop to user
   const airdropSignature = await provider.connection.requestAirdrop(
